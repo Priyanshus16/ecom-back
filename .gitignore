@@ -1,0 +1,4 @@
+node_modules/
+.env
+myfun.js
+oldindex.js
