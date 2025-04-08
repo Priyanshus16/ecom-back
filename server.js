@@ -7,6 +7,8 @@ import multer from "multer";
 import { memoryStorage } from "multer";
 import fs from "fs/promises";
 import fetch from "node-fetch";
+import nodemailer from "nodemailer";
+
 dotenv.config();
 const PORT = process.env.PORT || 3001;
 const app = express();
@@ -101,8 +103,6 @@ const CustomerSchema = Schema(
   { strict: false }
 );
 
-
-
 const CategorySchema = new Schema(
   {
     CategoryName: {
@@ -126,7 +126,7 @@ const SubCategorySchema = new Schema(
   {
     CategoryId: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: Category
+      ref: Category,
     },
     SubCategoryName: {
       type: String,
@@ -166,12 +166,12 @@ const ProductSchema = Schema(
     },
     ProductCategory: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: Category
+      ref: Category,
     },
     ProductSubCategory: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: SubCategory
-    },  
+      ref: SubCategory,
+    },
     ProductBrand: {
       type: String,
     },
@@ -205,14 +205,18 @@ const ProductSchema = Schema(
 );
 
 const Products = new model("Products", ProductSchema);
+
+const Admin = new model("Admin", AdminSchema);
+const Customer = new model("Customer", CustomerSchema);
 const OrderSchema = Schema(
   {
     UserId: {
-      type: String,
+      type: mongoose.Schema.Types.ObjectId,
+      ref: Customer,
     },
     ProductId: {
       type: mongoose.Schema.Types.ObjectId,
-      ref:Products
+      ref: Products,
     },
     ProductMainImgUrl: {
       type: String,
@@ -243,8 +247,6 @@ const OrderSchema = Schema(
   { strict: false }
 );
 
-const Admin = new model("Admin", AdminSchema);
-const Customer = new model("Customer", CustomerSchema);
 const Orders = new model("Orders", OrderSchema);
 
 cloudinary.config({
@@ -475,12 +477,12 @@ app.get("/getallproduct", (req, res) => {
 app.get("/getallproductById/:id", (req, res) => {
   try {
     const id = req.params.id;
-       let query = { Status: { $eq: "Accepted" } }; 
-    
+    let query = { Status: { $eq: "Accepted" } };
+
     if (id !== "All") {
       query.ProductCategory = id;
     }
-    
+
     Products.find(query)
       .sort({ created_at: -1 })
       .then((item) => {
@@ -493,11 +495,12 @@ app.get("/getallproductById/:id", (req, res) => {
     res.status(500).send("DB error");
   }
 });
-  
+
 app.get("/getproduct/:id", (req, res) => {
   try {
     const { id } = req.params;
-    Products.findOne({ _id: id }).populate("ProductSubCategory ProductCategory")
+    Products.findOne({ _id: id })
+      .populate("ProductSubCategory ProductCategory")
       .then((item) => {
         res.send({ data: item });
       })
@@ -511,7 +514,8 @@ app.get("/getproduct/:id", (req, res) => {
 
 app.get("/getallproduct/Admin", (req, res) => {
   try {
-    Products.find().populate("ProductSubCategory ProductCategory")
+    Products.find()
+      .populate("ProductSubCategory ProductCategory")
       .then((item) => {
         res.send({ data: item });
       })
@@ -525,6 +529,8 @@ app.get("/getallproduct/Admin", (req, res) => {
 app.post("/sendOTP", (req, res) => {
   try {
     const { number, otp } = req.body;
+    console.log(otp);
+
     const apiKey = "8hr6gDk5D0uhtFVYC5qZWw"; // Use your API key here
     const apiSender = "MARSKY";
     const mobile = number; // Example mobile number
@@ -611,7 +617,10 @@ async function distributeRewards(customerID, purchaseAmount) {
 
   let currentCustomer = customer;
   for (let i = 0; i < levels.length; i++) {
-    if (!currentCustomer.ReferenceBy) { console.log("customer not have refrreal"); break; }
+    if (!currentCustomer.ReferenceBy) {
+      console.log("customer not have refrreal");
+      break;
+    }
 
     const referrer = await Customer.findOne({
       ReferenceID: currentCustomer.ReferenceBy,
@@ -627,9 +636,11 @@ async function distributeRewards(customerID, purchaseAmount) {
     }
   }
 }
+
 app.post("/Order/Placed", async (req, res) => {
   try {
     const userPurchases = {};
+    const userEmails = {}; // Store user emails (assuming it's in req.body or fetched from DB)
 
     await Promise.all(
       req.body.map(async (item) => {
@@ -643,6 +654,7 @@ app.post("/Order/Placed", async (req, res) => {
           ProductSize,
           ProductQuantity,
           _id,
+          UserEmail, // Assuming email is sent in the request
         } = item;
 
         const Order = new Orders({
@@ -658,16 +670,18 @@ app.post("/Order/Placed", async (req, res) => {
         });
 
         await Order.save();
+        const user = await Customer.findOne({ _id: UserId });
 
-        // Calculate the total purchase amount for each user
         if (!userPurchases[UserId]) {
           userPurchases[UserId] = 0;
+          userEmails[UserId] = user.Email; // store email for later
         }
+
         userPurchases[UserId] += ProductPrice * ProductQuantity;
       })
     );
 
-    // Distribute rewards for each user
+    // Distribute rewards
     await Promise.all(
       Object.keys(userPurchases).map(async (userId) => {
         const purchaseAmount = userPurchases[userId];
@@ -675,19 +689,42 @@ app.post("/Order/Placed", async (req, res) => {
       })
     );
 
-    // Send a success response
-    res.send({ message: "Order Placed" });
+    // Send confirmation email
+    const transporter = nodemailer.createTransport({
+      service: "gmail",
+      auth: {
+        user: process.env.Nodemailer_Username,
+        pass: process.env.nodemailer_pass,
+      },
+    });
+    await Promise.all(
+      Object.keys(userEmails).map(async (userId) => {
+        const mailOptions = {
+          from: process.env.Nodemailer_Username,
+          to: userEmails[userId],
+          subject: "Order Confirmation - Thank You!",
+          html: `
+            <h2>Your Order Has Been Placed Successfully</h2>
+            <p>Thank you for shopping with us. Your total purchase amount is <strong>₹${userPurchases[userId]}</strong>.</p>
+            <p>We hope you enjoy your order!</p>
+          `,
+        };
+
+        await transporter.sendMail(mailOptions);
+      })
+    );
+
+    res.send({ message: "Order Placed & Email Sent" });
   } catch (error) {
-    // Handle errors and send a failure response
     console.error(error);
-    res.status(500).send({ message: "Order Fail" });
+    res.status(500).send({ message: "Order Failed" });
   }
 });
 
 app.get("/Orders/List", async (req, res) => {
   try {
     // Execute the query and await the result
-    const resp = await Orders.find().populate("ProductId")
+    const resp = await Orders.find().populate("ProductId UserId");
 
     // Check if there is any data
     if (resp && resp.length > 0) {
@@ -723,7 +760,9 @@ app.get("/getuserdata/:id", async (req, res) => {
 app.get("/Orders/:id", async (req, res) => {
   try {
     // Execute the query and await the result
-    const resp = await Orders.find({ UserId: req.params.id }).populate("ProductId");
+    const resp = await Orders.find({ UserId: req.params.id }).populate(
+      "ProductId"
+    );
 
     // Check if there is any data
     if (resp && resp.length > 0) {
@@ -770,7 +809,6 @@ app.get("/getAddress/:id", (req, res) => {
   }
 });
 
-
 // Read All Categories
 app.get("/categories", async (req, res) => {
   try {
@@ -792,7 +830,9 @@ app.get("/mobileCategories", async (req, res) => {
     // For each category, find linked subcategories
     const response = await Promise.all(
       categories.map(async (category) => {
-        const subCategories = await SubCategory.find({ CategoryId: category._id });
+        const subCategories = await SubCategory.find({
+          CategoryId: category._id,
+        });
         return {
           _id: category._id,
           CategoryName: category.CategoryName,
@@ -822,13 +862,17 @@ app.get("/mobileCategories/:id", async (req, res) => {
     const products = await Products.find({ ProductCategory: categoryId });
 
     if (!products || products.length === 0) {
-      return res.status(404).json({ message: "No products found for this category" });
+      return res
+        .status(404)
+        .json({ message: "No products found for this category" });
     }
 
     // Group products by ProductName
     const groupedData = products.reduce((acc, product) => {
       // Check if the product name already exists in the accumulator
-      let existingUnit = acc.find((unit) => unit.productName === product.ProductName);
+      let existingUnit = acc.find(
+        (unit) => unit.productName === product.ProductName
+      );
 
       if (existingUnit) {
         // If the product name exists, push this product as a size variation
@@ -858,38 +902,39 @@ app.get("/mobileCategories/:id", async (req, res) => {
   }
 });
 
-app.post("/categories", upload.single('image'), async (req, res) => {
+app.post("/categories", upload.single("image"), async (req, res) => {
   try {
     // Extract fields from the request body
     const { CategoryName, description } = req.body;
-          const base64String = req.file.buffer.toString("base64");
+    const base64String = req.file.buffer.toString("base64");
 
-      const result = await cloudinary.uploader.upload(
-        `data:image/png;base64,${base64String}`,
-        {
-          folder: "Ecommerce",
-          public_id: `product_images_${Date.now()}`,
-        }
-      );
+    const result = await cloudinary.uploader.upload(
+      `data:image/png;base64,${base64String}`,
+      {
+        folder: "Ecommerce",
+        public_id: `product_images_${Date.now()}`,
+      }
+    );
 
-      const ProductMainImgUrl = result.secure_url;
+    const ProductMainImgUrl = result.secure_url;
 
     // Construct the new category object
     const category = new Category({
       CategoryName,
       description: description || "", // Default value if not provided
-      image: ProductMainImgUrl ||  "", // Save image path if file uploaded
+      image: ProductMainImgUrl || "", // Save image path if file uploaded
     });
 
     // Save the category to the database
     await category.save();
 
-    res.status(201).send({ message: "Category created successfully!", category });
+    res
+      .status(201)
+      .send({ message: "Category created successfully!", category });
   } catch (error) {
     res.status(400).send({ error: error.message || "Error creating category" });
   }
 });
-
 
 // Update Category
 app.put("/categories/:id", async (req, res) => {
@@ -898,7 +943,8 @@ app.put("/categories/:id", async (req, res) => {
       new: true,
       runValidators: true,
     });
-    if (!category) return res.status(404).send({ message: "Category not found" });
+    if (!category)
+      return res.status(404).send({ message: "Category not found" });
     res.status(200).send(category);
   } catch (error) {
     res.status(400).send(error);
@@ -909,7 +955,8 @@ app.put("/categories/:id", async (req, res) => {
 app.delete("/categories/:id", async (req, res) => {
   try {
     const category = await Category.findByIdAndDelete(req.params.id);
-    if (!category) return res.status(404).send({ message: "Category not found" });
+    if (!category)
+      return res.status(404).send({ message: "Category not found" });
     res.status(200).send({ message: "Category deleted successfully" });
   } catch (error) {
     res.status(500).send(error);
@@ -917,23 +964,23 @@ app.delete("/categories/:id", async (req, res) => {
 });
 
 // Create SubCategory
-app.post("/subcategories", upload.single('image'), async (req, res) => {
+app.post("/subcategories", upload.single("image"), async (req, res) => {
   try {
     const { CategoryId, SubCategoryName, description } = req.body;
-          const base64String = req.file.buffer.toString("base64");
+    const base64String = req.file.buffer.toString("base64");
 
-      const result = await cloudinary.uploader.upload(
-        `data:image/png;base64,${base64String}`,
-        {
-          folder: "Ecommerce",
-          public_id: `product_images_${Date.now()}`,
-        }
-      );
+    const result = await cloudinary.uploader.upload(
+      `data:image/png;base64,${base64String}`,
+      {
+        folder: "Ecommerce",
+        public_id: `product_images_${Date.now()}`,
+      }
+    );
 
-      const ProductMainImgUrl = result.secure_url;
+    const ProductMainImgUrl = result.secure_url;
 
     // Create a new subcategory object
-    console.log(req.file)
+    console.log(req.file);
     const subCategory = new SubCategory({
       CategoryId,
       SubCategoryName,
@@ -963,8 +1010,11 @@ app.get("/subcategories", async (req, res) => {
 // Read Single SubCategory by ID
 app.get("/subcategories/:id", async (req, res) => {
   try {
-    const subCategory = await SubCategory.findById(req.params.id).populate("CategoryId");
-    if (!subCategory) return res.status(404).send({ message: "SubCategory not found" });
+    const subCategory = await SubCategory.findById(req.params.id).populate(
+      "CategoryId"
+    );
+    if (!subCategory)
+      return res.status(404).send({ message: "SubCategory not found" });
     res.status(200).send(subCategory);
   } catch (error) {
     res.status(500).send(error);
@@ -974,11 +1024,16 @@ app.get("/subcategories/:id", async (req, res) => {
 // Update SubCategory
 app.put("/subcategories/:id", async (req, res) => {
   try {
-    const subCategory = await SubCategory.findByIdAndUpdate(req.params.id, req.body, {
-      new: true,
-      runValidators: true,
-    });
-    if (!subCategory) return res.status(404).send({ message: "SubCategory not found" });
+    const subCategory = await SubCategory.findByIdAndUpdate(
+      req.params.id,
+      req.body,
+      {
+        new: true,
+        runValidators: true,
+      }
+    );
+    if (!subCategory)
+      return res.status(404).send({ message: "SubCategory not found" });
     res.status(200).send(subCategory);
   } catch (error) {
     res.status(400).send(error);
@@ -989,7 +1044,8 @@ app.put("/subcategories/:id", async (req, res) => {
 app.delete("/subcategories/:id", async (req, res) => {
   try {
     const subCategory = await SubCategory.findByIdAndDelete(req.params.id);
-    if (!subCategory) return res.status(404).send({ message: "SubCategory not found" });
+    if (!subCategory)
+      return res.status(404).send({ message: "SubCategory not found" });
     res.status(200).send({ message: "SubCategory deleted successfully" });
   } catch (error) {
     res.status(500).send(error);
