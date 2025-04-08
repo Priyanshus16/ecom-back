@@ -366,6 +366,7 @@ app.post("/AdminLogin", (req, res) => {
     res.send({ message: "Admin Login Failed" });
   }
 });
+
 app.post(
   "/AddProduct",
   upload.single("ProductMainImgUrl"),
@@ -474,6 +475,7 @@ app.get("/getallproduct", (req, res) => {
     res.send("db error");
   }
 });
+
 app.get("/getallproductById/:id", (req, res) => {
   try {
     const id = req.params.id;
@@ -526,6 +528,7 @@ app.get("/getallproduct/Admin", (req, res) => {
     res.send("db error");
   }
 });
+
 app.post("/sendOTP", (req, res) => {
   try {
     const { number, otp } = req.body;
@@ -570,6 +573,7 @@ app.post("/ProductUpdateStatus", (req, res) => {
     res.send("db error");
   }
 });
+
 app.post("/OrderUpdateStatus", (req, res) => {
   const { id, Statusmsg } = req.body;
   try {
@@ -584,6 +588,7 @@ app.post("/OrderUpdateStatus", (req, res) => {
     res.send("db error");
   }
 });
+
 app.post("/UpdateProduct", (req, res) => {
   const { _id } = req.body;
   try {
